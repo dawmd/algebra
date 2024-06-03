@@ -93,6 +93,24 @@ concept ring = std::is_arithmetic_v<T> || requires (T t, T& tref, const T& ctref
     { T::one() } noexcept -> std::same_as<T>;
 };
 
+template <ring Ring>
+Ring ring_zero() noexcept {
+    if constexpr (!std::is_arithmetic_v<Ring>) {
+        return Ring::zero();
+    } else {
+        return static_cast<Ring>(0);
+    }
+}
+
+template <ring Ring>
+Ring ring_one() noexcept {
+    if constexpr (!std::is_arithmetic_v<Ring>) {
+        return Ring::one();
+    } else {
+        return static_cast<Ring>(1);
+    }
+}
+
 } // namespace alg
 
 #endif // ALGEBRA_CORE_TYPES_RING_HH
