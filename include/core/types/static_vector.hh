@@ -23,8 +23,9 @@
 #ifndef ALGEBRA_CORE_TYPES_STATIC_VECTOR_HH
 #define ALGEBRA_CORE_TYPES_STATIC_VECTOR_HH
 
-#include <core/types/ring.hh>
 #include <core/types/field.hh>
+#include <core/types/ring.hh>
+#include <core/types/vector.hh>
 
 #include <array>
 #include <concepts>
@@ -190,6 +191,15 @@ private:
         return vec;
     }
 };
+
+namespace detail {
+
+template <ring Ring, std::size_t Size>
+struct is_vector<static_vector<Ring, Size>> {
+    static constexpr bool value = true;
+};
+
+} // namespace detail
 
 template <typename T, std::size_t Size>
     requires (Size != std::dynamic_extent)

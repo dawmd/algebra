@@ -23,8 +23,10 @@
 #ifndef ALGEBRA_CORE_TYPES_DYNAMIC_VECTOR_HH
 #define ALGEBRA_CORE_TYPES_DYNAMIC_VECTOR_HH
 
-#include <core/types/ring.hh>
 #include <core/types/field.hh>
+#include <core/types/ring.hh>
+#include <core/types/vector.hh>
+#include <detail/macros.hh>
 
 #include <cassert>
 #include <concepts>
@@ -72,10 +74,8 @@ public:
     }
 
     dynamic_vector(dynamic_vector&& other) {
-        m_values = (Ring*) std::assume_aligned<alignof(Ring)>(allocate_uninitialized(other.size()));
-        m_end = m_values + other.size();
-
-        std::uninitialized_move(other.m_values, other.m_end, m_values);
+        m_values = std::exchange(other.m_values, nullptr);
+        m_end = other.m_end;
     }
 
     dynamic_vector& operator=(dynamic_vector&& other) {
@@ -117,21 +117,23 @@ public:
     {}
 
     ~dynamic_vector() noexcept {
-        std::destroy(m_values, m_end);
-        std::free(m_values);
+        if (m_values) {
+            std::destroy(m_values, m_end);
+            std::free(m_values);
+        }
     }
 
 public:
     auto&& operator[](this auto&& self, std::size_t idx) noexcept {
-        Ring* vals = std::assume_aligned<alignof(Ring)>(m_values);
+        Ring* vals = std::assume_aligned<alignof(Ring)>(self.m_values);
         return vals[idx];
     }
 
     [[gnu::const]] std::size_t size() const noexcept {
-        return m_end - m_values;
+        return static_cast<std::size_t>(m_end - m_values);
     }
 
-    /// dynamic_vector-vector operations.
+    /// Vector-vector operations.
     dynamic_vector operator+(const dynamic_vector& other) const {
         return define_vec_op(*this, other, [] (const Ring& lhs, const Ring& rhs) { return lhs + rhs; });
     }
@@ -170,7 +172,7 @@ public:
     dynamic_vector& operator-=(const Ring& r) {
         return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs -= lhs; });
     }
-    friend dynamic_vector operator+(const Ring& r, const dynamic_vector& vec) {
+    friend dynamic_vector operator-(const Ring& r, const dynamic_vector& vec) {
         return vec - r;
     }
 
@@ -184,12 +186,10 @@ public:
         return vec * r;
     }
 
-    template <typename = typename std::enable_if<field<Ring>>::type>
-    dynamic_vector operator/(const Ring& r) const {
+    dynamic_vector operator/(const Ring& r) const requires field<Ring> {
         return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return rhs / lhs; });
     }
-    template <typename = typename std::enable_if<field<Ring>>::type>
-    dynamic_vector& operator/=(const Ring& r) const {
+    dynamic_vector& operator/=(const Ring& r) requires field<Ring> {
         return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs /= lhs; });
     }
 
@@ -234,18 +234,21 @@ private:
         [[assume(lhs.size() == rhs.size())]];
         
         const auto size = lhs.size();
-        Ring* data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        Ring* M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        Ring* M_ALG_RESTRICT ldata = std::assume_aligned<alignof(Ring)>(lhs.m_values);
+        Ring* M_ALG_RESTRICT rdata = std::assume_aligned<alignof(Ring)>(rhs.m_values);
         std::size_t idx = 0;
 
         try {
             for (; idx < size; ++idx) {
-                std::construct_at(data + idx, op(lhs, rhs));
+                std::construct_at(data + idx, op(ldata[idx], rdata[idx]));
             }
         } catch (...) {
             for (std::size_t i = 0; i < idx; ++i) {
                 std::destroy_at(data + i);
             }
             std::free(data);
+            throw;
         }
 
         return dynamic_vector(data, data + size, private_constructor_marker{});
@@ -257,8 +260,8 @@ private:
         assert(size == rhs.size());
         [[assume(size == rhs.size())]];
 
-        Ring* ldata = std::assume_aligned<alignof(Ring)>(lhs.m_values);
-        Ring* rdata = std::assume_aligned<alignof(Ring)>(rhs.m_values);
+        Ring* M_ALG_RESTRICT ldata = std::assume_aligned<alignof(Ring)>(lhs.m_values);
+        Ring* M_ALG_RESTRICT rdata = std::assume_aligned<alignof(Ring)>(rhs.m_values);
 
         for (std::size_t i = 0; i < size; ++i) {
             op(ldata[i], rdata[i]);
@@ -268,29 +271,31 @@ private:
     }
 
     template <typename Op>
-    static dynamic_vector define_scalar_op(const Ring& r, const dynamic_vector& vec, const Op& op) {
+    static dynamic_vector define_scalar_op(const Ring& M_ALG_RESTRICT r, const dynamic_vector& vec, const Op& op) {
         const auto size = vec.size();
-        Ring* data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        Ring* M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        Ring* M_ALG_RESTRICT vecdata = std::assume_aligned<alignof(Ring)>(vec.m_values);
         std::size_t idx = 0;
 
         try {
             for (; idx < size; ++idx) {
-                std::construct_at(data + idx, op(r, vec.m_values[idx]));
+                std::construct_at(data + idx, op(r, vecdata[idx]));
             }
         } catch (...) {
             for (std::size_t i = 0; i < idx; ++i) {
                 std::destroy_at(data + i);
             }
             std::free(data);
+            throw;
         }
 
         return dynamic_vector(data, data + size, private_constructor_marker{});
     }
 
     template <typename Op>
-    static dynamic_vector& define_scalar_op_self(const Ring& r, dynamic_vector& vec, const Op& op) {
+    static dynamic_vector& define_scalar_op_self(const Ring& M_ALG_RESTRICT r, dynamic_vector& vec, const Op& op) {
         const auto size = vec.size();
-        Ring* data = std::assume_aligned<alignof(Ring)>(vec.m_values);
+        Ring* M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(vec.m_values);
 
         for (std::size_t i = 0; i < size; ++i) {
             op(r, data[i]);
@@ -298,6 +303,17 @@ private:
         return vec;
     }
 };
+
+template class dynamic_vector<float>;
+
+namespace detail {
+
+template <ring Ring>
+struct is_vector<dynamic_vector<Ring>> {
+    static constexpr bool value = true;
+};
+
+} // namespace detail
 
 } // namespace alg
 
