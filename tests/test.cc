@@ -20,4 +20,14 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#include <core/types/dynamic_vector.hh>
+
+#include <vector>
+
+namespace std {
+
+template class vector<float, std::allocator<float>>;
+
+}
+
 int main() {}

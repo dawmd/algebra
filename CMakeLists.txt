@@ -34,7 +34,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS True)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_CXX_FLAGS "-Wall -Wextra -Wshadow -Wconversion -Wdeprecated -Wdeprecated-declarations -pedantic")
+set(CMAKE_CXX_FLAGS "-Wall -Wextra -Wshadow -Wconversion -Wdeprecated -Wdeprecated-declarations -pedantic -O3 -march=tigerlake")
 
 set(TEST_DIR tests)
 set(TEST_FILES

@@ -36,13 +36,16 @@
 #include <memory>
 #include <new>
 #include <ranges>
-#include <span>
 #include <utility>
 
 namespace alg {
 
 template <ring Ring>
 class dynamic_vector {
+public:
+    using value_type = Ring;
+    using size_type = std::size_t;
+
 private:
     Ring* m_values;
     Ring* m_end;
@@ -86,7 +89,7 @@ public:
         return *this;
     }
 
-    dynamic_vector(std::size_t size, const Ring& init_value) {
+    dynamic_vector(size_type size, const Ring& init_value) {
         assert(size > 0);
         m_values = (Ring*) std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
         m_end = m_values + size;
@@ -94,7 +97,7 @@ public:
         std::uninitialized_fill(m_values, m_end, init_value);
     }
 
-    template <std::forward_iterator It>
+    template <std::input_iterator It>
         requires std::convertible_to<std::iter_value_t<It>, Ring>
     dynamic_vector(It begin, It end) {
         const auto size = std::distance(begin, end);
@@ -102,35 +105,57 @@ public:
 
         m_values = (Ring*) std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
         m_end = m_values;
-
-        std::size_t idx = 0;
-        for (It it = begin; it != end; ++it) {
-            std::construct_at(m_values + idx, *it);
-            ++m_end;
+        
+        try {
+            for (It it = begin; it != end; ++it) {
+                std::construct_at(m_end, *it);
+                ++m_end;
+            }
+        } catch (...) {
+            std::ranges::destroy(std::views::reverse(std::ranges::subrange(m_values, m_end)));
+            std::free(m_values);
+            throw;
         }
     }
 
     template <std::ranges::range Range>
         requires std::convertible_to<std::ranges::range_value_t<Range>, Ring>
-    dynamic_vector(Range&& range)
-        : dynamic_vector(std::ranges::begin(range), std::ranges::end(range))
-    {}
+    dynamic_vector(std::from_range_t, Range&& range) {
+        const auto size = std::distance(std::forward<Range>(range));
+
+        m_values = (Ring*) std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        m_end = m_values;
+
+        try {
+            for (auto&& val : std::forward<Range>(range)) {
+                std::construct_at(m_end, std::forward<decltype(val)>(val));
+                ++m_end;
+            }
+        } catch (...) {
+            std::ranges::destroy(std::views::reverse(std::ranges::subrange(m_values, m_end)));
+            std::free(m_values);
+            throw;
+        }
+    }
 
     ~dynamic_vector() noexcept {
         if (m_values) {
-            std::destroy(m_values, m_end);
+            std::ranges::destroy(std::views::reverse(std::ranges::subrange(m_values, m_end)));
             std::free(m_values);
         }
     }
 
 public:
-    auto&& operator[](this auto&& self, std::size_t idx) noexcept {
-        Ring* vals = std::assume_aligned<alignof(Ring)>(self.m_values);
-        return vals[idx];
+    auto* data(this auto&& self) noexcept {
+        return std::assume_aligned<alignof(Ring)>(self.m_values);
     }
 
-    [[gnu::const]] std::size_t size() const noexcept {
-        return static_cast<std::size_t>(m_end - m_values);
+    auto&& operator[](this auto&& self, size_type idx) noexcept {
+        return self.data()[idx];
+    }
+
+    [[gnu::const]] size_type size() const noexcept {
+        return static_cast<size_type>(m_end - m_values);
     }
 
     /// Vector-vector operations.
@@ -157,96 +182,81 @@ public:
 
     /// Scalar-vector operations.
     dynamic_vector operator+(const Ring& r) const {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return lhs + rhs; });
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs + rhs; });
     }
     dynamic_vector& operator+=(const Ring& r) {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs += lhs; });
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs += rhs; });
     }
     friend dynamic_vector operator+(const Ring& r, const dynamic_vector& vec) {
-        return vec + r;
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs + rhs; });
     }
 
     dynamic_vector operator-(const Ring& r) const {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return lhs - rhs; });
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs - rhs; });
     }
     dynamic_vector& operator-=(const Ring& r) {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs -= lhs; });
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs -= rhs; });
     }
     friend dynamic_vector operator-(const Ring& r, const dynamic_vector& vec) {
-        return vec - r;
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs - rhs; });
     }
 
     dynamic_vector operator*(const Ring& r) const {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return lhs * rhs; });
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs * rhs; });
     }
     dynamic_vector& operator*=(const Ring& r) {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs *= lhs; });
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs *= rhs; });
     }
     friend dynamic_vector operator*(const Ring& r, const dynamic_vector& vec) {
-        return vec * r;
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs * rhs; });
     }
 
     dynamic_vector operator/(const Ring& r) const requires field<Ring> {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return rhs / lhs; });
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs / rhs; });
     }
     dynamic_vector& operator/=(const Ring& r) requires field<Ring> {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs /= lhs; });
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs /= rhs; });
     }
-
-    /// Miscellaneous.
-    [[gnu::const]] Ring dot(const dynamic_vector& other) const {
-        const auto size = this->size();
-        assert(size == other.size());
-        [[assume(size == other.size())]];
-
-        Ring* ldata = std::assume_aligned<alignof(Ring)>(m_values);
-        Ring* rdata = std::assume_aligned<alignof(Ring)>(other.m_values);
-
-        Ring result = ring_zero<Ring>();
-        for (std::size_t idx = 0; idx < size; ++idx) {
-            result += ldata[idx] * rdata[idx];
-        }
-        return result;
+    friend dynamic_vector& operator/(const Ring& r, const dynamic_vector& vec) requires field<Ring> {
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs / rhs; });
     }
 
 public:
-    static dynamic_vector zero(std::size_t size) {
+    static dynamic_vector zero(size_type size) {
         assert(size > 0);
         return dynamic_vector(size, ring_zero<Ring>());
     }
-    static dynamic_vector one(std::size_t size) {
+    static dynamic_vector one(size_type size) {
         assert(size > 0);
         return dynamic_vector(size, ring_zero<Ring>());
     }
 
 private:
-    static Ring* allocate_uninitialized(std::size_t size) {
+    static Ring* allocate_uninitialized(size_type size) {
         Ring* result = (Ring*) std::aligned_alloc(alignof(Ring), sizeof(Ring) * size);
         if (result == nullptr) {
             throw std::bad_alloc{};
         }
-        return result;
+        return std::assume_aligned<alignof(Ring)>(result);
     }
 
     template <typename Op>
+        requires std::invocable<Op, const Ring&, const Ring&>
     static dynamic_vector define_vec_op(const dynamic_vector& lhs, const dynamic_vector& rhs, const Op& op) {
         assert(lhs.size() == rhs.size());
-        [[assume(lhs.size() == rhs.size())]];
         
         const auto size = lhs.size();
-        Ring* M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
-        Ring* M_ALG_RESTRICT ldata = std::assume_aligned<alignof(Ring)>(lhs.m_values);
-        Ring* M_ALG_RESTRICT rdata = std::assume_aligned<alignof(Ring)>(rhs.m_values);
-        std::size_t idx = 0;
+        Ring* const M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        Ring* const M_ALG_RESTRICT ldata = lhs.data();
+        Ring* const M_ALG_RESTRICT rdata = rhs.data();
+        size_type idx = 0;
 
         try {
             for (; idx < size; ++idx) {
                 std::construct_at(data + idx, op(ldata[idx], rdata[idx]));
             }
         } catch (...) {
-            for (std::size_t i = 0; i < idx; ++i) {
-                std::destroy_at(data + i);
-            }
+            std::ranges::destroy(std::views::reverse(std::ranges::subrange(data, data + idx)));
             std::free(data);
             throw;
         }
@@ -255,15 +265,15 @@ private:
     }
 
     template <typename Op>
+        requires std::invocable<Op, Ring&, const Ring&>
     static dynamic_vector& define_vec_op_self(dynamic_vector& lhs, const dynamic_vector& rhs, const Op& op) {
         const auto size = lhs.size();
         assert(size == rhs.size());
-        [[assume(size == rhs.size())]];
 
-        Ring* M_ALG_RESTRICT ldata = std::assume_aligned<alignof(Ring)>(lhs.m_values);
-        Ring* M_ALG_RESTRICT rdata = std::assume_aligned<alignof(Ring)>(rhs.m_values);
+        Ring* M_ALG_RESTRICT ldata = lhs.data();
+        Ring* M_ALG_RESTRICT rdata = rhs.data();
 
-        for (std::size_t i = 0; i < size; ++i) {
+        for (size_type i = 0; i < size; ++i) {
             op(ldata[i], rdata[i]);
         }
 
@@ -271,20 +281,19 @@ private:
     }
 
     template <typename Op>
-    static dynamic_vector define_scalar_op(const Ring& M_ALG_RESTRICT r, const dynamic_vector& vec, const Op& op) {
+        requires std::invocable<Op, const Ring&, const Ring&>
+    static dynamic_vector define_scalar_vec_op(const Ring& M_ALG_RESTRICT r, const dynamic_vector& vec, const Op& op) {
         const auto size = vec.size();
-        Ring* M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
-        Ring* M_ALG_RESTRICT vecdata = std::assume_aligned<alignof(Ring)>(vec.m_values);
-        std::size_t idx = 0;
+        Ring* const M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        Ring* const M_ALG_RESTRICT vecdata = vec.data();
+        size_type idx = 0;
 
         try {
             for (; idx < size; ++idx) {
                 std::construct_at(data + idx, op(r, vecdata[idx]));
             }
         } catch (...) {
-            for (std::size_t i = 0; i < idx; ++i) {
-                std::destroy_at(data + i);
-            }
+            std::ranges::destroy(std::views::reverse(std::ranges::subrange(data, data + idx)));
             std::free(data);
             throw;
         }
@@ -293,18 +302,39 @@ private:
     }
 
     template <typename Op>
-    static dynamic_vector& define_scalar_op_self(const Ring& M_ALG_RESTRICT r, dynamic_vector& vec, const Op& op) {
+        requires std::invocable<Op, const Ring&, const Ring&>
+    static dynamic_vector define_vec_scalar_op(const dynamic_vector& vec, const Ring& M_ALG_RESTRICT r, const Op& op) {
         const auto size = vec.size();
-        Ring* M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(vec.m_values);
+        Ring* const M_ALG_RESTRICT vecdata = vec.data();
+        Ring* const M_ALG_RESTRICT data = std::assume_aligned<alignof(Ring)>(allocate_uninitialized(size));
+        size_type idx = 0;
 
-        for (std::size_t i = 0; i < size; ++i) {
-            op(r, data[i]);
+        try {
+            for (; idx < size; ++idx) {
+                std::construct_at(data + idx, op(vecdata[idx], r));
+            }
+        } catch (...) {
+            std::ranges::destroy(std::views::reverse(std::ranges::subrange(data, data + idx)));
+            std::free(data);
+            throw;
         }
+
+        return dynamic_vector(data, data + size, private_constructor_marker{});
+    }
+
+    template <typename Op>
+        requires std::invocable<Op, Ring&, const Ring&>
+    static dynamic_vector& define_vec_scalar_op_self(dynamic_vector& vec, const Ring& M_ALG_RESTRICT r, const Op& op) {
+        const auto size = vec.size();
+        Ring* const M_ALG_RESTRICT data = vec.data();
+
+        for (size_type i = 0; i < size; ++i) {
+            op(data[i], r);
+        }
+
         return vec;
     }
 };
-
-template class dynamic_vector<float>;
 
 namespace detail {
 

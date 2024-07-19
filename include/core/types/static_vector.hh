@@ -23,6 +23,7 @@
 #ifndef ALGEBRA_CORE_TYPES_STATIC_VECTOR_HH
 #define ALGEBRA_CORE_TYPES_STATIC_VECTOR_HH
 
+#include "detail/macros.hh"
 #include <core/types/field.hh>
 #include <core/types/ring.hh>
 #include <core/types/vector.hh>
@@ -30,7 +31,7 @@
 #include <array>
 #include <concepts>
 #include <cstddef>
-#include <span>
+#include <ranges>
 #include <utility>
 
 namespace alg {
@@ -77,6 +78,10 @@ public:
     ~static_vector() = default;
 
 public:
+    auto* data(this auto&& self) noexcept {
+        return std::assume_aligned<alignof(Ring)>(m_values.data());
+    }
+
     auto&& operator[](this auto&& self, std::size_t idx) noexcept {
         return m_values[idx];
     }
@@ -103,53 +108,52 @@ public:
         return define_vec_op_self(*this, other, [] (Ring& lhs, const Ring& rhs) { lhs *= rhs; });
     }
 
+    static_vector operator/(const static_vector& other) const requires field<Ring> {
+        return define_vec_op(*this, other, [] (const Ring& lhs, const Ring& rhs) { return lhs / rhs; });
+    }
+    static_vector& operator/=(const static_vector& other) requires field<Ring> {
+        return define_vec_op_self(*this, other, [] (Ring& lhs, const Ring& rhs) { lhs /= rhs; });
+    }
+
     /// Scalar-vector operations.
     static_vector operator+(const Ring& r) const {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return lhs + rhs; });
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs + rhs; });
     }
     static_vector& operator+=(const Ring& r) {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs += lhs; });
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs += rhs; });
     }
     friend static_vector operator+(const Ring& r, const static_vector& vec) {
-        return vec + r;
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs + rhs; });
     }
 
-    static_vector operator-(const Ring& r) const {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return lhs - rhs; });
+    static_vector operator+(const Ring& r) const {
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs - rhs; });
     }
-    static_vector& operator-=(const Ring& r) {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs -= lhs; });
+    static_vector& operator+=(const Ring& r) {
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs -= rhs; });
     }
     friend static_vector operator+(const Ring& r, const static_vector& vec) {
-        return vec - r;
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs - rhs; });
     }
-
-    static_vector operator*(const Ring& r) const {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return lhs * rhs; });
+    
+    static_vector operator+(const Ring& r) const {
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs * rhs; });
     }
-    static_vector& operator*=(const Ring& r) {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs *= lhs; });
+    static_vector& operator+=(const Ring& r) {
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs *= rhs; });
     }
-    friend static_vector operator*(const Ring& r, const static_vector& vec) {
-        return vec * r;
+    friend static_vector operator+(const Ring& r, const static_vector& vec) {
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs * rhs; });
     }
-
-    template <typename = typename std::enable_if<field<Ring>>::type>
-    static_vector operator/(const Ring& r) const {
-        return define_scalar_op(r, *this, [] (const Ring& lhs, const Ring& rhs) { return rhs / lhs; });
+    
+    static_vector operator+(const Ring& r) const requires field<Ring> {
+        return define_vec_scalar_op(*this, r, [] (const Ring& lhs, const Ring& rhs) { return lhs / rhs; });
     }
-    template <typename = typename std::enable_if<field<Ring>>::type>
-    static_vector& operator/=(const Ring& r) const {
-        return define_scalar_op_self(r, *this, [] (const Ring& lhs, Ring& rhs) { rhs /= lhs; });
+    static_vector& operator+=(const Ring& r) requires field<Ring> {
+        return define_vec_scalar_op_self(*this, r, [] (Ring& lhs, const Ring& rhs) { lhs /= rhs; });
     }
-
-    /// Miscellaneous.
-    [[gnu::const]] Ring dot(const static_vector& other) const {
-        Ring result = ring_zero<Ring>();
-        for (std::size_t idx = 0; idx < Size; ++idx) {
-            result += m_values[idx] * other.m_values[idx];
-        }
-        return result;
+    friend static_vector operator+(const Ring& r, const static_vector& vec) requires field<Ring> {
+        return define_scalar_vec_op(r, vec, [] (const Ring& lhs, const Ring& rhs) { return lhs / rhs; });
     }
 
 public:
@@ -163,32 +167,53 @@ public:
 private:
     template <typename Op>
     static static_vector define_vec_op(const static_vector& lhs, const static_vector& rhs, const Op& op) {
+        Ring* const M_ALG_RESTRICT ldata = lhs.data();
+        Ring* const M_ALG_RESTRICT rdata = rhs.data();
+
         return [&] <std::size_t... Idxs> (std::index_sequence<Idxs...>) {
-            return std::array<Ring, Size>{{op(lhs.m_values[Idxs], rhs.m_values[Idxs])...}};
+            return std::array<Ring, Size>{{op(ldata[Idxs], rdata[Idxs])...}};
         } (std::make_index_sequence<Size>());
     }
 
     template <typename Op>
     static static_vector& define_vec_op_self(static_vector& lhs, const static_vector& rhs, const Op& op) {
+        Ring* const M_ALG_RESTRICT ldata = lhs.data();
+        Ring* const M_ALG_RESTRICT rdata = rhs.data();
+
         for (std::size_t i = 0; i < Size; ++i) {
-            op(lhs.m_values[i], rhs.m_values[i]);
+            op(ldata[i], rdata[i]);
         }
+
         return lhs;
     }
 
     template <typename Op>
-    static static_vector define_scalar_op(const Ring& r, const static_vector& vec, const Op& op) {
+    static static_vector define_vec_scalar_op(const static_vector& vec, const Ring& M_ALG_RESTRICT r, const Op& op) {
+        Ring* const M_ALG_RESTRICT vecdata = vec.data();
+
         return [&] <std::size_t... Idxs> (std::index_sequence<Idxs...>) {
-            return std::array<Ring, Size>{{op(r, vec.m_values[Idxs])...}};
+            return std::array<Ring, Size>{{op(vecdata[Idxs], r)...}};
         } (std::make_index_sequence<Size>());
     }
 
     template <typename Op>
-    static static_vector& define_scalar_op_self(const Ring& r, static_vector& vec, const Op& op) {
+    static static_vector define_vec_scalar_op_self(const static_vector& vec, const Ring& M_ALG_RESTRICT r, const Op& op) {
+        Ring* cnst M_ALG_RESTRICT vecdata = vec.data();
+
         for (std::size_t i = 0; i < Size; ++i) {
-            op(r, vec.m_values[i]);
+            op(vecdata[i], r);
         }
+
         return vec;
+    }
+
+    template <typename Op>
+    static static_vector define_vec_scalar_op(const Ring& M_ALG_RESTRICT r, const static_vector& vec, const Op& op) {
+        Ring* const M_ALG_RESTRICT vecdata = vec.data();
+
+        return [&] <std::size_t... Idxs> (std::index_sequence<Idxs...>) {
+            return std::array<Ring, Size>{{op(r, vecdata[Idxs])...}};
+        } (std::make_index_sequence<Size>());
     }
 };
 
